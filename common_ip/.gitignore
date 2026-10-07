@@ -1,0 +1,3 @@
+# Keep original IP configurations; Vivado regenerates all other contents.
+/*/*
+!/*/*.xci

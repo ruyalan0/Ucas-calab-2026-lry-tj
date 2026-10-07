@@ -1,0 +1,229 @@
+--- exp10/myCPU/mycpu_top.v
++++ exp11/myCPU/mycpu_top.v
+@@ -63,6 +63,17 @@
+ reg [4:0] ms_dest;
+ reg ws_gr_we;
+ reg [4:0] ws_dest;
++
++// 【实践11修改】访存宽度和无符号标志随指令传递，MEM保存本条load的地址低位。
++localparam [1:0] MEM_BYTE = 2'b00, MEM_HALF = 2'b01, MEM_WORD = 2'b10;
++wire [1:0] ds_mem_size;
++wire ds_load_unsigned;
++reg [1:0] es_mem_size, ms_mem_size, ms_addr_low;
++reg es_load_unsigned, ms_load_unsigned;
++wire [3:0] es_store_mask;
++wire [7:0] ms_load_byte;
++wire [15:0] ms_load_half;
++wire [31:0] ms_load_result;
+ 
+ wire [31:0] es_alu_result;
+ // 【实践10修改】新增统一执行结果、7位乘除法控制及完成握手信号，供EX执行和ID前递使用。
+@@ -230,6 +241,12 @@
+ wire        inst_mul_w, inst_mulh_w, inst_mulh_wu;
+ wire        inst_div_w, inst_mod_w, inst_div_wu, inst_mod_wu;
+ 
++// 【实践11修改】新增4条条件分支及6条窄访存指令，共支持46条指令。
++wire inst_blt, inst_bge, inst_bltu, inst_bgeu;
++wire inst_ld_b, inst_ld_h, inst_ld_bu, inst_ld_hu, inst_st_b, inst_st_h;
++wire ds_is_load, ds_is_store, ds_is_cond_branch;
++wire ds_br_lt_signed, ds_br_lt_unsigned;
++
+ wire        need_ui5;
+ // 【实践10修改】新增12位无符号立即数选择信号，供andi/ori/xori零扩展使用。
+ wire        need_ui12;
+@@ -307,6 +324,23 @@
+ assign inst_bl     = op_31_26_d[6'h15];
+ assign inst_beq    = op_31_26_d[6'h16];
+ assign inst_bne    = op_31_26_d[6'h17];
++// 【实践11修改】分支仅译码高6位；窄访存保留12位有符号地址偏移。
++assign inst_blt    = op_31_26_d[6'h18];
++assign inst_bge    = op_31_26_d[6'h19];
++assign inst_bltu   = op_31_26_d[6'h1a];
++assign inst_bgeu   = op_31_26_d[6'h1b];
++assign inst_ld_b   = op_31_26_d[6'h0a] & op_25_22_d[4'h0];
++assign inst_ld_h   = op_31_26_d[6'h0a] & op_25_22_d[4'h1];
++assign inst_ld_bu  = op_31_26_d[6'h0a] & op_25_22_d[4'h8];
++assign inst_ld_hu  = op_31_26_d[6'h0a] & op_25_22_d[4'h9];
++assign inst_st_b   = op_31_26_d[6'h0a] & op_25_22_d[4'h4];
++assign inst_st_h   = op_31_26_d[6'h0a] & op_25_22_d[4'h5];
++assign ds_is_load = inst_ld_w | inst_ld_b | inst_ld_h | inst_ld_bu | inst_ld_hu;
++assign ds_is_store = inst_st_w | inst_st_b | inst_st_h;
++assign ds_is_cond_branch = inst_beq | inst_bne | inst_blt | inst_bge | inst_bltu | inst_bgeu;
++assign ds_mem_size = (inst_ld_b | inst_ld_bu | inst_st_b) ? MEM_BYTE :
++                     (inst_ld_h | inst_ld_hu | inst_st_h) ? MEM_HALF : MEM_WORD;
++assign ds_load_unsigned = inst_ld_bu | inst_ld_hu;
+ assign inst_lu12i_w= op_31_26_d[6'h05] & ~ds_inst[25];
+ 
+ // 【实践10修改】新增16条指令译码；立即数指令仅检查操作码字段，寄存器移位和乘除法使用完整操作码。
+@@ -335,7 +369,8 @@
+ // 逻辑左移、逻辑右移、算术右移和高位立即数装载。
+ // load/store用加法算有效地址；jirl/bl用加法算链接地址PC+4。
+ // 【实践10修改】扩展ALU选择条件：pcaddu12i复用加法，新增立即数和寄存器移位指令复用原运算。
+-assign alu_op[ 0] = inst_add_w | inst_addi_w | inst_ld_w | inst_st_w
++// 【实践11修改】全部访存复用加法和立即数，源寄存器及写回控制使用统一分类。
++assign alu_op[ 0] = inst_add_w | inst_addi_w | ds_is_load | ds_is_store
+                     | inst_jirl | inst_bl | inst_pcaddu12i;
+ assign alu_op[ 1] = inst_sub_w;
+ assign alu_op[ 2] = inst_slt | inst_slti;
+@@ -352,8 +387,8 @@
+ // 【实践10修改】新增need_ui12；need_si12加入slti/sltui，need_si20加入pcaddu12i。
+ assign need_ui5   =  inst_slli_w | inst_srli_w | inst_srai_w;
+ assign need_ui12  =  inst_andi | inst_ori | inst_xori;
+-assign need_si12  =  inst_addi_w | inst_ld_w | inst_st_w | inst_slti | inst_sltui;
+-assign need_si16  =  inst_jirl | inst_beq | inst_bne;
++assign need_si12  =  inst_addi_w | ds_is_load | ds_is_store | inst_slti | inst_sltui;
++assign need_si16  =  inst_jirl | ds_is_cond_branch;
+ assign need_si20  =  inst_lu12i_w | inst_pcaddu12i;
+ assign need_si26  =  inst_b | inst_bl;
+ assign src2_is_4  =  inst_jirl | inst_bl;
+@@ -373,8 +408,8 @@
+ 
+ assign jirl_offs = {{14{i16[15]}}, i16[15:0], 2'b0};
+ 
+-// beq/bne读取rd用于比较；st.w读取rd作为写内存数据；其他读取rk。
+-assign src_reg_is_rd = inst_beq | inst_bne | inst_st_w;
++// 【实践11修改】全部条件分支读取rd用于比较，全部store读取rd作为写数据。
++assign src_reg_is_rd = ds_is_cond_branch | ds_is_store;
+ 
+ // 【实践10修改】源1的PC选择加入pcaddu12i；源2立即数选择加入5条立即数指令及pcaddu12i。
+ assign src1_is_pc    = inst_jirl | inst_bl | inst_pcaddu12i;
+@@ -389,19 +424,19 @@
+                        inst_ori    |
+                        inst_xori   |
+                        inst_pcaddu12i |
+-                       inst_ld_w   |
+-                       inst_st_w   |
++                       ds_is_load  |
++                       ds_is_store |
+                        inst_lu12i_w|
+                        inst_jirl   |
+                        inst_bl     ;
+ 
+-assign res_from_mem  = inst_ld_w;
++assign res_from_mem  = ds_is_load;
+ assign dst_is_r1     = inst_bl;
+ 
+ // 沿用实践6修正：bl需要写r1；store及非链接分支不写寄存器。
+ // gr_we仅表示译码写回意图，真实写使能在WB结合valid及复位生成。
+-assign gr_we         = ~inst_st_w & ~inst_beq & ~inst_bne & ~inst_b;
+-assign mem_we        = inst_st_w;
++assign gr_we         = ~ds_is_store & ~ds_is_cond_branch & ~inst_b;
++assign mem_we        = ds_is_store;
+ assign dest          = dst_is_r1 ? 5'd1 : rd;
+ 
+ assign rf_raddr1 = rj;
+@@ -412,14 +447,14 @@
+ assign ds_use_rj = inst_add_w || inst_sub_w || inst_slt || inst_sltu
+                 || inst_nor || inst_and || inst_or || inst_xor
+                 || inst_slli_w || inst_srli_w || inst_srai_w
+-                || inst_addi_w || inst_ld_w || inst_st_w
++                || inst_addi_w || ds_is_load || ds_is_store
+                 || inst_slti || inst_sltui || inst_andi || inst_ori || inst_xori
+                 || inst_sll_w || inst_srl_w || inst_sra_w || (|md_op)
+-                || inst_jirl || inst_beq || inst_bne;
++                || inst_jirl || ds_is_cond_branch;
+ assign ds_use_rkd = inst_add_w || inst_sub_w || inst_slt || inst_sltu
+                  || inst_nor || inst_and || inst_or || inst_xor
+                  || inst_sll_w || inst_srl_w || inst_sra_w || (|md_op)
+-                 || inst_st_w || inst_beq || inst_bne;
++                 || ds_is_store || ds_is_cond_branch;
+ 
+ // 标记EXE/MEM/WB中的在途写回；无效槽、非写回指令及r0不产生依赖。
+ // WB仍算在途写回，因为寄存器堆要到当前上升沿才完成写入。
+@@ -446,7 +481,8 @@
+ assign ds_rkd_raw_ws = ds_valid && ds_use_rkd && (rf_raddr2 != 5'd0)
+                     && ws_pending_write && (rf_raddr2 == ws_dest);
+ 
+-assign ds_is_reg_branch = inst_beq | inst_bne | inst_jirl;
++// 【实践11修改】新增分支同样等待EX写者，保持分支专用MEM/WB前递通路。
++assign ds_is_reg_branch = ds_is_cond_branch | inst_jirl;
+ 
+ // EX只前递已完成的非load结果，寄存器型转移仍等待MEM。
+ // 最新EX写者未就绪时屏蔽MEM/WB中的同名旧值，并由RAW暂停阻止接收。
+@@ -499,15 +535,22 @@
+ assign ds_br_rkd_value = ds_rkd_fwd_ms ? ms_final_result :
+                          ds_rkd_fwd_ws ? ws_final_result : rf_rdata2;
+ assign rj_eq_rd = (ds_br_rj_value == ds_br_rkd_value);
++// 【实践11修改】显式区分有符号和无符号比较，避免相减溢出影响分支。
++assign ds_br_lt_signed = ($signed(ds_br_rj_value) < $signed(ds_br_rkd_value));
++assign ds_br_lt_unsigned = (ds_br_rj_value < ds_br_rkd_value);
+ assign ds_br_cond = (inst_beq && rj_eq_rd)
+                 || (inst_bne && !rj_eq_rd)
++                || (inst_blt && ds_br_lt_signed)
++                || (inst_bge && !ds_br_lt_signed)
++                || (inst_bltu && ds_br_lt_unsigned)
++                || (inst_bgeu && !ds_br_lt_unsigned)
+                 || inst_jirl || inst_bl || inst_b;
+ assign br_taken_cancel = resetn && !reset && ds_to_es_valid && es_allowin && ds_br_cond;
+ 
+ 
+ // PC相对目标必须基于ds_pc；jirl目标为rj+偏移，不能混用IF级PC。
+ // 【实践10修改】jirl目标基址由通用rj_value改为分支专用ds_br_rj_value，PC相对分支保持不变。
+-assign ds_br_target = (inst_beq || inst_bne || inst_bl || inst_b) ? (ds_pc + br_offs) :
++assign ds_br_target = (ds_is_cond_branch || inst_bl || inst_b) ? (ds_pc + br_offs) :
+                                                     (ds_br_rj_value + jirl_offs);
+ 
+ // ID只选择操作数，真正的ALU运算移至EXE。
+@@ -545,6 +588,9 @@
+         es_alu_src1     <= ds_alu_src1;
+         es_alu_src2     <= ds_alu_src2;
+         es_res_from_mem <= res_from_mem;
++        // 【实践11修改】元数据与本条指令一同锁存，EX暂停时保持。
++        es_mem_size     <= ds_mem_size;
++        es_load_unsigned <= ds_load_unsigned;
+         es_gr_we        <= gr_we;
+         es_mem_we       <= mem_we;
+         es_dest         <= dest;
+@@ -600,14 +646,19 @@
+                         es_is_div ? es_div_result : es_alu_result;
+ 
+ // EXE驱动访存地址和store数据，RAM在进入MEM的沿上接收。
+-// 仅有效load/store拉高片选，仅有效store使四个字节全部可写。
++// 【实践11修改】仅有效load/store拉高片选，store按宽度选择字节通道。
+ // 即使es_mem_we残留为1，无效槽或复位期间也不会产生写请求。
+ // 【实践10修改】RAM片选和写使能由es_valid改为es_fire限定，仅在EX实际向MEM传递时发出访存请求。
+ assign data_sram_en    = resetn && !reset && es_fire
+                       && (es_res_from_mem || es_mem_we);
+-assign data_sram_we    = {4{resetn && !reset && es_fire && es_mem_we}};
++assign es_store_mask  = (es_mem_size == MEM_BYTE) ? (4'b0001 << es_alu_result[1:0]) :
++                        (es_mem_size == MEM_HALF) ?
++                            (es_alu_result[1] ? 4'b1100 : 4'b0011) : 4'b1111;
++assign data_sram_we    = {4{resetn && !reset && es_fire && es_mem_we}} & es_store_mask;
+ assign data_sram_addr  = es_alu_result;
+-assign data_sram_wdata = es_rkd_value;
++// 【实践11修改】复制低字节/半字，由mask决定写入位置；地址保持完整字节地址。
++assign data_sram_wdata = (es_mem_size == MEM_BYTE) ? {4{es_rkd_value[7:0]}} :
++                         (es_mem_size == MEM_HALF) ? {2{es_rkd_value[15:0]}} : es_rkd_value;
+ 
+ //==========================================================
+ // EXE -> MEM：传递统一执行结果及其配套写回信息
+@@ -627,6 +678,10 @@
+         // 【实践10修改】MEM结果寄存器输入由es_alu_result改为es_exec_result，后续MEM/WB沿用原写回通路。
+         ms_alu_result   <= es_exec_result;
+         ms_res_from_mem <= es_res_from_mem;
++        // 【实践11修改】仅使用本条load的类型与地址低位进行MEM选通。
++        ms_mem_size     <= es_mem_size;
++        ms_load_unsigned <= es_load_unsigned;
++        ms_addr_low     <= es_alu_result[1:0];
+         ms_gr_we        <= es_gr_we;
+         ms_dest         <= es_dest;
+     end
+@@ -639,7 +694,17 @@
+ // RAM返回值与ms_res_from_mem对应同一条load，不可在EXE提前使用，
+ // 也无需再额外延迟一拍；非load使用传入的ms_alu_result。
+ 
+-assign ms_final_result = ms_res_from_mem ? data_sram_rdata : ms_alu_result;
++// 【实践11修改】小端选通及扩展在MEM完成，普通前递和分支前递均取得完整32位值。
++assign ms_load_byte = (ms_addr_low == 2'b00) ? data_sram_rdata[7:0] :
++                      (ms_addr_low == 2'b01) ? data_sram_rdata[15:8] :
++                      (ms_addr_low == 2'b10) ? data_sram_rdata[23:16] : data_sram_rdata[31:24];
++assign ms_load_half = ms_addr_low[1] ? data_sram_rdata[31:16] : data_sram_rdata[15:0];
++assign ms_load_result = (ms_mem_size == MEM_BYTE) ?
++                         (ms_load_unsigned ? {24'b0, ms_load_byte} : {{24{ms_load_byte[7]}}, ms_load_byte}) :
++                        (ms_mem_size == MEM_HALF) ?
++                         (ms_load_unsigned ? {16'b0, ms_load_half} : {{16{ms_load_half[15]}}, ms_load_half}) :
++                         data_sram_rdata;
++assign ms_final_result = ms_res_from_mem ? ms_load_result : ms_alu_result;
+ 
+ //==========================================================
+ // MEM -> WB：锁存最终结果、目的寄存器、写回控制和PC

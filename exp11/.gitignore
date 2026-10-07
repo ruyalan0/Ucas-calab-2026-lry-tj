@@ -1,0 +1,31 @@
+# Vivado regenerable outputs; retain XPR/XCI, test images and reference trace.
+.Xil/
+*.cache/
+*.sim/
+*.runs/
+*.gen/
+*.ip_user_files/
+*.hw/
+xsim.dir/
+*.log
+*.jou
+*.pb
+*.wdb
+*.vcd
+*.str
+*.backup.*
+*.bak
+__pycache__/
+*.pyc
+
+# Only original configuration files are required for these IPs.
+/soc_verify/soc_bram/rtl/xilinx_ip/*/*
+!/soc_verify/soc_bram/rtl/xilinx_ip/*/*.xci
+
+# Generated test inputs and local copies are reproducible from Python scripts.
+/myCPU/tests/program.hex
+/myCPU/tests/expected.hex
+/myCPU/tests/counts.vh
+/myCPU/tests/func_tb.vh
+/myCPU/tests/func_ram.vh
+/myCPU/publish_staging/
