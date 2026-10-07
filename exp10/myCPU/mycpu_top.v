@@ -64,8 +64,8 @@ reg [4:0] ms_dest;
 reg ws_gr_we;
 reg [4:0] ws_dest;
 
-// 【实践9修改】将原EXE、MEM、WB段的结果信号声明移至ID前递选择器之前
 wire [31:0] es_alu_result;
+// 【实践10修改】新增统一执行结果、7位乘除法控制及完成握手信号，供EX执行和ID前递使用。
 wire [31:0] es_exec_result;
 reg  [ 6:0] es_md_op;
 wire es_is_mul, es_is_div, es_div_signed, es_div_remainder;
@@ -80,6 +80,7 @@ reg  [31:0] ws_final_result;
 
 assign fs_ready_go = 1'b1;
 assign ds_ready_go = !ds_raw_stall;
+// 【实践10修改】EX由固定就绪改为除法完成后才就绪
 assign es_ready_go = !es_is_div || div_done;
 assign ms_ready_go = 1'b1;
 assign ws_ready_go = 1'b1;
@@ -96,6 +97,7 @@ assign fs_to_ds_valid = fs_valid && fs_ready_go;
 assign ds_to_es_valid = ds_valid && ds_ready_go;
 assign es_to_ms_valid = es_valid && es_ready_go;
 assign ms_to_ws_valid = ms_valid && ms_ready_go;
+// 【实践10修改】新增EX向MEM实际传递握手，用于消费除法结果及限定访存请求。
 assign es_fire = es_to_ms_valid && ms_allowin;
 
 //==========================================================
@@ -169,6 +171,7 @@ end
 //==========================================================
 // ID产生的控制信号用于选择操作数，并通过级间寄存器传到使用它的级。
 wire [11:0] alu_op;
+// 【实践10修改】新增独立7位乘除法操作码，原12位alu_op宽度保持不变。
 wire [ 6:0] md_op;
 wire        src1_is_pc;
 wire        src2_is_imm;
@@ -221,12 +224,14 @@ wire        inst_bl;
 wire        inst_beq;
 wire        inst_bne;
 wire        inst_lu12i_w;
+// 【实践10修改】新增16条指令标志：5条立即数、3条寄存器移位、pcaddu12i及7条乘除法指令。
 wire        inst_slti, inst_sltui, inst_andi, inst_ori, inst_xori;
 wire        inst_sll_w, inst_srl_w, inst_sra_w, inst_pcaddu12i;
 wire        inst_mul_w, inst_mulh_w, inst_mulh_wu;
 wire        inst_div_w, inst_mod_w, inst_div_wu, inst_mod_wu;
 
 wire        need_ui5;
+// 【实践10修改】新增12位无符号立即数选择信号，供andi/ori/xori零扩展使用。
 wire        need_ui12;
 wire        need_si12;
 wire        need_si16;
@@ -244,10 +249,10 @@ wire [31:0] rf_wdata;
 
 // 真实源使用、在途写者及两读端口的RAW检测信号。
 wire ds_use_rj, ds_use_rkd;
-// 【实践9新增】寄存器型转移识别、两类暂停及两个源操作数的三级前递控制信号。
 wire ds_is_reg_branch;
 wire ds_load_use_stall;
 wire ds_branch_ex_stall;
+// 【实践10修改】新增ID依赖未完成EX除法结果时的暂停信号。
 wire ds_div_use_stall;
 
 wire ds_rj_fwd_es,  ds_rj_fwd_ms,  ds_rj_fwd_ws;
@@ -257,6 +262,7 @@ wire ds_rj_raw_es, ds_rj_raw_ms, ds_rj_raw_ws;//rj与后三级存在RAW相关
 wire ds_rkd_raw_es, ds_rkd_raw_ms, ds_rkd_raw_ws;//rkd与后三级存在RAW相关
 
 wire rj_eq_rd;
+// 【实践10修改】新增分支专用操作数，独立于包含EX乘除法结果的通用前递通路。
 wire [31:0] ds_br_rj_value, ds_br_rkd_value;
 wire [31:0] ds_alu_src1, ds_alu_src2;
 
@@ -303,7 +309,7 @@ assign inst_beq    = op_31_26_d[6'h16];
 assign inst_bne    = op_31_26_d[6'h17];
 assign inst_lu12i_w= op_31_26_d[6'h05] & ~ds_inst[25];
 
-// 实践10：立即数指令只比较opcode，避免把立即数字段作为操作码。
+// 【实践10修改】新增16条指令译码；立即数指令仅检查操作码字段，寄存器移位和乘除法使用完整操作码。
 assign inst_slti   = op_31_26_d[6'h00] & op_25_22_d[4'h8];
 assign inst_sltui  = op_31_26_d[6'h00] & op_25_22_d[4'h9];
 assign inst_andi   = op_31_26_d[6'h00] & op_25_22_d[4'hd];
@@ -321,12 +327,14 @@ assign inst_mod_w  = op_31_26_d[6'h00] & op_25_22_d[4'h0] & op_21_20_d[2'h2] & o
 assign inst_div_wu = op_31_26_d[6'h00] & op_25_22_d[4'h0] & op_21_20_d[2'h2] & op_19_15_d[5'h02];
 assign inst_mod_wu = op_31_26_d[6'h00] & op_25_22_d[4'h0] & op_21_20_d[2'h2] & op_19_15_d[5'h03];
 
+// 【实践10修改】将7条乘除法指令编码为独热md_op；[2:0]控制乘法，[6:3]控制除法/取余。
 assign md_op = {inst_mod_wu, inst_div_wu, inst_mod_w, inst_div_w,
                 inst_mulh_wu, inst_mulh_w, inst_mul_w};
 
 // ALU控制依次为加、减、有符号/无符号比较、与、或非、或、异或、
 // 逻辑左移、逻辑右移、算术右移和高位立即数装载。
 // load/store用加法算有效地址；jirl/bl用加法算链接地址PC+4。
+// 【实践10修改】扩展ALU选择条件：pcaddu12i复用加法，新增立即数和寄存器移位指令复用原运算。
 assign alu_op[ 0] = inst_add_w | inst_addi_w | inst_ld_w | inst_st_w
                     | inst_jirl | inst_bl | inst_pcaddu12i;
 assign alu_op[ 1] = inst_sub_w;
@@ -341,6 +349,7 @@ assign alu_op[ 9] = inst_srli_w | inst_srl_w;
 assign alu_op[10] = inst_srai_w | inst_sra_w;
 assign alu_op[11] = inst_lu12i_w;
 
+// 【实践10修改】新增need_ui12；need_si12加入slti/sltui，need_si20加入pcaddu12i。
 assign need_ui5   =  inst_slli_w | inst_srli_w | inst_srai_w;
 assign need_ui12  =  inst_andi | inst_ori | inst_xori;
 assign need_si12  =  inst_addi_w | inst_ld_w | inst_st_w | inst_slti | inst_sltui;
@@ -351,6 +360,7 @@ assign src2_is_4  =  inst_jirl | inst_bl;
 
 // slti/sltui都符号扩展i12；逻辑立即数零扩展，移位只取低5位。
 // pcaddu12i使用当前指令PC加{i20,12'b0}，不改变分支控制。
+// 【实践10修改】立即数选择新增ui12零扩展和ui5显式提取；slti/sltui仍符号扩展i12，pcaddu12i复用高20位立即数。
 assign imm = src2_is_4 ? 32'h4                      :
              need_si20 ? {i20[19:0], 12'b0}         :
              need_ui12 ? {20'b0, i12}              :
@@ -366,6 +376,7 @@ assign jirl_offs = {{14{i16[15]}}, i16[15:0], 2'b0};
 // beq/bne读取rd用于比较；st.w读取rd作为写内存数据；其他读取rk。
 assign src_reg_is_rd = inst_beq | inst_bne | inst_st_w;
 
+// 【实践10修改】源1的PC选择加入pcaddu12i；源2立即数选择加入5条立即数指令及pcaddu12i。
 assign src1_is_pc    = inst_jirl | inst_bl | inst_pcaddu12i;
 
 assign src2_is_imm   = inst_slli_w |
@@ -397,6 +408,7 @@ assign rf_raddr1 = rj;
 assign rf_raddr2 = src_reg_is_rd ? rd :rk;
 
 // 按指令语义标记真实源：jirl读rj，store还读rd；立即数字段不算源。
+// 【实践10修改】真实源检测覆盖新增指令：立即数运算读rj，寄存器移位和乘除法读rj/rk；pcaddu12i不读寄存器。
 assign ds_use_rj = inst_add_w || inst_sub_w || inst_slt || inst_sltu
                 || inst_nor || inst_and || inst_or || inst_xor
                 || inst_slli_w || inst_srli_w || inst_srai_w
@@ -434,11 +446,11 @@ assign ds_rkd_raw_ms = ds_valid && ds_use_rkd && (rf_raddr2 != 5'd0)
 assign ds_rkd_raw_ws = ds_valid && ds_use_rkd && (rf_raddr2 != 5'd0)
                     && ws_pending_write && (rf_raddr2 == ws_dest);
 
-// 【实践9新增】识别beq/bne/jirl，这些指令不使用EX到ID的组合前递路径。
 assign ds_is_reg_branch = inst_beq | inst_bne | inst_jirl;
 
 // EX只前递已完成的非load结果，寄存器型转移仍等待MEM。
 // 最新EX写者未就绪时屏蔽MEM/WB中的同名旧值，并由RAW暂停阻止接收。
+// 【实践10修改】EX前递由非load扩展为非load且除法已完成；MEM排除EX同名写者，WB排除EX/MEM同名写者，避免前递旧值。
 assign es_result_available = !es_res_from_mem && (!es_is_div || div_done);
 assign ds_rj_fwd_es  = ds_rj_raw_es && es_result_available && !ds_is_reg_branch;
 assign ds_rj_fwd_ms  = ds_rj_raw_ms && !ds_rj_raw_es;
@@ -447,10 +459,9 @@ assign ds_rkd_fwd_es = ds_rkd_raw_es && es_result_available && !ds_is_reg_branch
 assign ds_rkd_fwd_ms = ds_rkd_raw_ms && !ds_rkd_raw_es;
 assign ds_rkd_fwd_ws = ds_rkd_raw_ws && !ds_rkd_raw_es && !ds_rkd_raw_ms;
 
-// 【实践9新增】EX级load尚无读回数据，存在源依赖时暂停ID一拍。
 assign ds_load_use_stall = es_res_from_mem && (ds_rj_raw_es || ds_rkd_raw_es);
-// 【实践9新增】寄存器型转移依赖EX结果时暂停一拍，待生产者进入MEM后前递。
 assign ds_branch_ex_stall = ds_is_reg_branch  && (ds_rj_raw_es || ds_rkd_raw_es);
+// 【实践10修改】在原load-use和分支依赖暂停外，新增依赖未完成除法的暂停，并汇总到ds_raw_stall。
 assign ds_div_use_stall = es_is_div && !div_done && (ds_rj_raw_es || ds_rkd_raw_es);
 // 非相关ID指令也受es_allowin约束，不能在除法等待期间提前跳转。
 assign ds_raw_stall = ds_load_use_stall || ds_branch_ex_stall || ds_div_use_stall;
@@ -468,13 +479,13 @@ regfile u_regfile(
     .wdata  (rf_wdata )
     );
 
-// 【实践9修改】rj操作数由直接读寄存器堆改为EX > MEM > WB > 寄存器堆的优先选择。
+// 【实践10修改】rj的EX前递源由es_alu_result改为es_exec_result，支持ALU、乘法及除法结果。
 assign rj_value = ds_rj_fwd_es ? es_exec_result :
                   ds_rj_fwd_ms ? ms_final_result :
                   ds_rj_fwd_ws ? ws_final_result :
                                  rf_rdata1;
 
-// 【实践9修改】rk/rd操作数采用相同前递优先级，同时供ALU、分支比较及store数据使用。
+// 【实践10修改】rk/rd的EX前递源同样改为统一执行结果，供后续运算及store数据使用。
 assign rkd_value = ds_rkd_fwd_es ? es_exec_result :
                    ds_rkd_fwd_ms ? ms_final_result :
                    ds_rkd_fwd_ws ? ws_final_result :
@@ -482,8 +493,7 @@ assign rkd_value = ds_rkd_fwd_es ? es_exec_result :
 
 // 操作数就绪且分支能离开ID时才重定向，并取消旧IF对应的ID槽。
 // 分支仍进入EX，bl/jirl正常写回链接值；不清除后三级或目标IF。
-// Branches already stall on an EX dependency. Keep their data muxes
-// physically separate so EX multiplier/ALU forwarding cannot feed fetch.
+// 【实践10修改】分支比较改用独立MEM/WB/寄存器堆选择器，切断EX乘法器/ALU经分支通向取指的组合路径。
 assign ds_br_rj_value = ds_rj_fwd_ms ? ms_final_result :
                         ds_rj_fwd_ws ? ws_final_result : rf_rdata1;
 assign ds_br_rkd_value = ds_rkd_fwd_ms ? ms_final_result :
@@ -496,6 +506,7 @@ assign br_taken_cancel = resetn && !reset && ds_to_es_valid && es_allowin && ds_
 
 
 // PC相对目标必须基于ds_pc；jirl目标为rj+偏移，不能混用IF级PC。
+// 【实践10修改】jirl目标基址由通用rj_value改为分支专用ds_br_rj_value，PC相对分支保持不变。
 assign ds_br_target = (inst_beq || inst_bne || inst_bl || inst_b) ? (ds_pc + br_offs) :
                                                     (ds_br_rj_value + jirl_offs);
 
@@ -513,6 +524,7 @@ reg [11:0] es_alu_op;
 reg [31:0] es_alu_src1, es_alu_src2;
 reg [31:0] es_rkd_value;
 
+// 【实践10修改】新增ID到EX的md_op寄存器；复位清零，接收普通指令时写零，EX等待时保持。
 // 普通指令也写入全零md_op；EX等待时控制位与操作数一起保持。
 always @(posedge clk) begin
     if (reset)
@@ -544,7 +556,6 @@ end
 // EXE：ALU运算及数据RAM请求
 //==========================================================
 // 原ALU实例迁移到此处，输入全部来自同一条EXE指令。
-// 【实践9修改】es_alu_result声明已移至前部，供ID前递和本级ALU共用。
 alu u_alu(
     .alu_op     (es_alu_op),
     .alu_src1   (es_alu_src1),
@@ -552,12 +563,14 @@ alu u_alu(
     .alu_result (es_alu_result)
 );
 
+// 【实践10修改】EX按有效位和md_op识别乘除法，并选择有符号除法及商/余数结果。
 assign es_is_mul = es_valid && (|es_md_op[2:0]);
 assign es_is_div = es_valid && (|es_md_op[6:3]);
 assign es_div_signed = es_md_op[3] | es_md_op[4];
 assign es_div_remainder = es_md_op[4] | es_md_op[6];
 
 // exp10_mul33必须配置为33x33有符号、66位输出、PipeStages=0。
+// 【实践10修改】新增组合乘法单元，使用EX锁存的两个操作数，由md_op选择有符号/无符号模式。
 mul_unit u_mul_unit(
     .src1        (es_alu_src1),
     .src2        (es_alu_src2),
@@ -565,6 +578,7 @@ mul_unit u_mul_unit(
     .product     (mul_product)
 );
 
+// 【实践10修改】新增多周期除法单元；done解除EX等待，结果仅在es_fire时消费，避免重复提交。
 div_unit u_div_unit(
     .clk         (clk),
     .reset       (reset),
@@ -579,6 +593,7 @@ div_unit u_div_unit(
     .remainder   (div_remainder)
 );
 
+// 【实践10修改】mul.w取积低32位，mulh取高32位；div/mod选择商或余数，再与ALU结果统一选择。
 assign es_mul_result = es_md_op[0] ? mul_product[31:0] : mul_product[63:32];
 assign es_div_result = es_div_remainder ? div_remainder : div_quotient;
 assign es_exec_result = es_is_mul ? es_mul_result :
@@ -587,6 +602,7 @@ assign es_exec_result = es_is_mul ? es_mul_result :
 // EXE驱动访存地址和store数据，RAM在进入MEM的沿上接收。
 // 仅有效load/store拉高片选，仅有效store使四个字节全部可写。
 // 即使es_mem_we残留为1，无效槽或复位期间也不会产生写请求。
+// 【实践10修改】RAM片选和写使能由es_valid改为es_fire限定，仅在EX实际向MEM传递时发出访存请求。
 assign data_sram_en    = resetn && !reset && es_fire
                       && (es_res_from_mem || es_mem_we);
 assign data_sram_we    = {4{resetn && !reset && es_fire && es_mem_we}};
@@ -597,6 +613,7 @@ assign data_sram_wdata = es_rkd_value;
 // EXE -> MEM：传递统一执行结果及其配套写回信息
 //==========================================================
 // load标志与PC、目的寄存器同步传递；store请求已完成，无需再传写数据。
+// 【实践10修改】沿用ms_alu_result寄存器名，内容扩展为ALU/乘法/除法的统一执行结果。
 reg [31:0] ms_pc, ms_alu_result; // ms_alu_result也保存乘法或除法结果。
 
 always @(posedge clk) begin
@@ -607,6 +624,7 @@ always @(posedge clk) begin
 
     if (es_to_ms_valid && ms_allowin) begin
         ms_pc           <= es_pc;
+        // 【实践10修改】MEM结果寄存器输入由es_alu_result改为es_exec_result，后续MEM/WB沿用原写回通路。
         ms_alu_result   <= es_exec_result;
         ms_res_from_mem <= es_res_from_mem;
         ms_gr_we        <= es_gr_we;
